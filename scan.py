@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*- 
+
 import sys
 import re
 import ssl
@@ -5,11 +7,10 @@ import socket
 import time
 import threading
 
-
 if sys.version_info[0] == 2:
     import Queue as queue
     pass
-if sys.version_info[0] == 3:
+elif sys.version_info[0] == 3:
     import queue
 
 global_queue = queue.Queue()
@@ -116,7 +117,10 @@ def check_rep(addr, port, rep, flag):
     # print((addr, port, rep, flag))
     if flag == 'U':
         if port == 137:  # parse NBNS may have problem
-            num = ord(rep[56:57].decode())
+            try:  # Exception handle here
+                num = ord(rep[56:57].decode())
+            except:
+                return ''
             # print(num)
             data = rep[57:]
             ret = ''
@@ -214,10 +218,18 @@ def check_rep(addr, port, rep, flag):
                 # print(length)
                 data = data[47 + length:]
                 # print(data.decode('UTF-16LE', errors='ignore').replace('\x00', '|'))
-                ret += data.replace(b'\x00\x00', b'|').replace(b'\x00', b'').decode('UTF-8', errors='ignore').replace('\x00', '|')
+                
+                if isinstance(data, str):
+                    data =  data.replace('\x00\x00', '|').replace('\x00', '')
+                    ret += data
+                else:
+                    data = data.replace(b'\x00\x00', b'|').replace(b'\x00', b'')
+                    ret += data.decode('utf-8', errors='ignore')
+                   
             except Exception as e:
                 ret += 'Fail to detect OS ...'
                 print(e, 'smbos')
+                print(addr, port)
     
             return ret
 
@@ -280,19 +292,16 @@ def thread(ports, udp_ports):
                 pass
 
             try:    
-                # msg += banner.replace('\n', '\\n').replace('\r', '\\r') if isinstance(banner, str) else banner.decode('utf-8', errors='replace') # .replace(b'\n', b'\\n').replace(b'\r', b'\\r') # decode and pring banner
+
                 if isinstance(rep, str):
-                    if sys.version_info[0] == 2:
-                        tmp_rep = rep.decode('utf-8', errors='ignore').encode('utf-8').replace('\n', '\\n').replace('\r', '\\r')
-                    elif sys.version_info[0] == 3:
-                        tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r')
+                    tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r')
                 else:
                     tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
 
                 tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
                 msg += tmp_rep
             except Exception as e:
-                print('Encoding error ? ', e)
+                print('Check rep error ??? ', e)
                 print(addr, port)
                 print(rep)
 
@@ -358,5 +367,6 @@ def main():
     print('Waiting stop...')
     print('Cost time: %.2f' % (time.time() - start))
 
-main()
+if __name__ == '__main__':
+    main()
 # print(check_rep('172.16.9.250', 445, '', 'T'))

@@ -6,6 +6,7 @@ import ssl
 import socket
 import time
 import threading
+import optparse
 
 if sys.version_info[0] == 2:
     import Queue as queue
@@ -110,6 +111,38 @@ def set_data(ip, port, flag):
         exit()
 
     return data
+
+
+def new_handle_input():
+
+    parser = optparse.OptionParser('''
+  python scan.py 10.19.38.0/24 [-o nt] [-p 80,81-85,...]''')
+
+    parser.add_option("-o", dest="options", default="nt", help="n means nbns, udp t means tcp, default: nt")
+    parser.add_option("-p", dest="ports", default=DEFAULT_PORTS, help="tcp ports to scan, like 25,8080-8086,8888")  
+ 
+    (options, args)= parser.parse_args()
+    
+    if len(args) < 1:
+        print('*********************************************************')
+        print('*         A simple  port scanner By: iiiiii             *')
+        print('*    https://github.com/iiilin/ASimplePortScanner       *')
+        print('*********************************************************')
+        parser.print_help()
+        exit()
+    
+    hosts, ports, udp_ports = [], [], []
+    for ips in args:
+        hosts += to_ips(ips)
+    ports = to_ports(options.ports)
+    
+    if 'n' in options.options:
+        udp_ports = [137]
+    if 't' not in options.options:
+        ports = []
+
+    # print(hosts, ports, udp_ports)
+    return hosts, ports, udp_ports
 
 
 """
@@ -262,9 +295,6 @@ def check_rep(addr, port, rep, flag):
             return '+Vulnerable+ Redis without password'
         else:
             return rep
-    else:
-        print('No protocol specifc ...')
-        exit()
 
 
 def thread(ports, udp_ports):
@@ -317,12 +347,24 @@ def thread(ports, udp_ports):
 
 
             if isinstance(rep, str):
-                tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r') # .encode('utf-8', errors='ignore')
+                tmp_rep = rep.replace('\n', '\\n').replace('\r', '\\r')
+
+                if sys.version_info[0] == 2: # py26    
+                    tmp_rep = tmp_rep.decode('utf-8', 'ignore') # .encode('utf-8', errors='ignore')
+                    tmp_rep = check_rep(addr, port, tmp_rep, 'T')
+                    tmp_rep = tmp_rep.decode('utf-8', 'ignore')
+                elif sys.version_info[0] == 3:
+                    tmp_rep = check_rep(addr, port, tmp_rep, 'T')                    
+                
             else:
-                tmp_rep = rep.decode('utf-8', errors='ignore').replace('\n', '\\n').replace('\r', '\\r')
-                # print('success')
-            tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
-            msg += tmp_rep
+                # print(type(rep))
+                tmp_rep = rep.decode('utf-8', 'ignore').replace('\n', '\\n').replace('\r', '\\r')
+                tmp_rep = check_rep(addr, port, tmp_rep, 'T')
+
+            # tmp_rep = check_rep(addr, port, tmp_rep, 'T')  # Exception in function ??
+
+
+            msg = msg + tmp_rep
             #except Exception as e:
             #    print('-----  Error check rep error ', e)
             #    print(addr, port)
@@ -333,43 +375,9 @@ def thread(ports, udp_ports):
             print('[*]' + addr + ' ' + msg)
             lock.release()
 
-def handle_input():
-    if len(sys.argv) != 2 and len(sys.argv) != 3 and len(sys.argv) != 4:
-        # print('*********************************************************')
-        # print('     A simple muti-threading port scanner By: iiiiii     ')
-        # print('     https://github.com/iiilin/ASimplePortScanner        ')
-        # print('*********************************************************')
-        # print('Default tcp port: ' + DEFAULT_PORTS)
-        # print('Default udp port: ' + DEFAULT_UDP_PORTS)
-        print('Usage:')
-        print('python scan.py ip [UT] [ports]')
-        print('Example:')
-        print('python scan.py 10.19.38.0/24')
-        print('python scan.py 10.19.38.0-254')
-        print('python scan.py 10.19.38.8 U')
-        print('python scan.py 10.19.38.8 T 22,23,24,25,1000-10086,22722')
-        # print('*********************************************************')
-        exit() 
-
-    if len(sys.argv) >= 2:
-        hosts = to_ips(sys.argv[1])
-        ports = to_ports(DEFAULT_PORTS)
-        udp_ports = to_ports(DEFAULT_UDP_PORTS)  # always udp
-
-    if len(sys.argv) >= 3:
-
-        if 'T' not in sys.argv[2]:
-            ports = []
-        elif 'U' not in sys.argv[2]:
-            udp_ports = []
-    
-    if len(sys.argv) >= 4:
-        ports = to_ports(sys.argv[3])
-    
-    return hosts, ports, udp_ports
-
 def main():
-    hosts, ports, udp_ports = handle_input()
+    hosts, ports, udp_ports = new_handle_input()
+
     start = time.time()
     for host in hosts:
         global_queue.put(host)
